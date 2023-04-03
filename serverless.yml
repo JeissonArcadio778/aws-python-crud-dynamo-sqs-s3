@@ -1,0 +1,129 @@
+service: sls-crud-python-dynamodb
+frameworkVersion: '3'
+
+provider:
+  name: aws
+  runtime: python3.9
+  region: us-east-1
+  profile: default
+  stage: dev
+  timeout: 5
+  memorySize: 128
+  environment:
+    DYNAMODB_TABLE: ProductsTable
+    REGION_NAME: ${self:provider.region}
+  
+  iam:
+    role:
+      statements:
+        - Effect: Allow
+          Action:   
+            - dynamodb:Query
+            - dynamodb:Scan
+            - dynamodb:GetItem
+            - dynamodb:PutItem
+            - dynamodb:UpdateItem
+            - dynamodb:DeleteItem
+          Resource: 
+              - "arn:aws:dynamodb:${opt:region, self:provider.region}:*:table/${self:provider.environment.DYNAMODB_TABLE}"
+        - Effect: Allow
+          Action:
+            - sns:*
+          Resource:
+            - 'arn:aws:sns:us-east-1:788950990295:my-sns-notification'
+
+functions:
+
+  hello:
+    handler: handler.hello
+
+  create_product:
+    handler: handler.create_product
+    events:
+      - http:
+          path: products/create
+          method: post
+
+  get_product: 
+    handler: handler.get_product
+    events:
+      - http:
+          path: products/get/{product_id}
+          method: get
+
+  all_product: 
+    handler: handler.all_product
+    events:
+      - http:
+          path: products/all
+          method: get
+
+  update_product:
+    handler: handler.update_product
+    events:
+      - http:
+          path: products/update/{product_id}
+          method: put
+
+  delete_product:
+    handler: handler.delete_product
+    events:
+      - http:
+          path: product/delete/{product_id}
+          method: delete
+  
+  buy_product:
+    handler: handler.buy_product
+    events:
+      - http:
+          path: products/buy
+          method: post
+
+  fill_stock:
+    handler: handler.fill_stock
+    events:
+      - stream:
+          type: dynamodb
+          batchSize: 1 # Quantity of SQS Messages to trigger the lambda
+          startingPosition: LATEST
+          arn:
+            Fn::GetAtt: [ProductsTable, StreamArn]
+
+
+resources: 
+  Resources: 
+    ProductsTable: 
+      Type: AWS::DynamoDB::Table
+      Properties: 
+          TableName: ${self:provider.environment.DYNAMODB_TABLE}
+          AttributeDefinitions:
+            - AttributeName: 'id'
+              AttributeType: 'S'
+            - AttributeName: 'stock'
+              AttributeType: 'N'
+            - AttributeName: 'category'
+              AttributeType: 'S'
+          KeySchema:
+            - AttributeName: 'id'
+              KeyType: 'HASH'
+            - AttributeName: 'stock'
+              KeyType: 'RANGE'
+          ProvisionedThroughput:
+            ReadCapacityUnits: 1
+            WriteCapacityUnits: 1
+          GlobalSecondaryIndexes:
+            - IndexName: 'category_index'
+              KeySchema:
+                - AttributeName: 'category'
+                  KeyType: 'HASH'
+              Projection:
+                ProjectionType: 'ALL'
+              ProvisionedThroughput:
+                ReadCapacityUnits: 1
+                WriteCapacityUnits: 1
+          StreamSpecification:
+            StreamViewType: NEW_IMAGE
+
+    
+
+
