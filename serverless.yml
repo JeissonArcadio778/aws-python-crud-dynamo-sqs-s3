@@ -12,6 +12,8 @@ provider:
   environment:
     DYNAMODB_TABLE: ProductsTable
     REGION_NAME: ${self:provider.region}
+    SQS_QUEUE_NAME: PendingStockFill
+    URL_SQS: "https://sqs.us-east-1.amazonaws.com/788950990295/PendingStockFill"
   
   iam:
     role:
@@ -28,9 +30,16 @@ provider:
               - "arn:aws:dynamodb:${opt:region, self:provider.region}:*:table/${self:provider.environment.DYNAMODB_TABLE}"
         - Effect: Allow
           Action:
-            - sns:*
+            - sqs:*
           Resource:
-            - 'arn:aws:sns:us-east-1:788950990295:my-sns-notification'
+            - "arn:aws:sqs:us-east-1:788950990295:PendingStockFill"
+        - Effect: Allow
+          Action:
+            - s3:*
+          Resource: arn:aws:s3:::*
+
+custom: 
+  bucket: buckets-buy-products
 
 functions:
 
@@ -82,45 +91,37 @@ functions:
   fill_stock:
     handler: handler.fill_stock
     events:
-      - stream:
-          type: dynamodb
+      - sqs: 
+          arn: 
+            Fn::GetAtt:
+                - ${self:provider.environment.SQS_QUEUE_NAME}
+                - Arn
           batchSize: 1 # Quantity of SQS Messages to trigger the lambda
-          startingPosition: LATEST
-          arn:
-            Fn::GetAtt: [ProductsTable, StreamArn]
 
 
 resources: 
   Resources: 
+    PendingStockFill:
+      Type: "AWS::SQS::Queue"
+      Properties: 
+        QueueName: "PendingStockFill"
     ProductsTable: 
       Type: AWS::DynamoDB::Table
       Properties: 
           TableName: ${self:provider.environment.DYNAMODB_TABLE}
           AttributeDefinitions:
-            - AttributeName: 'id'
-              AttributeType: 'S'
-            - AttributeName: 'stock'
-              AttributeType: 'N'
-            - AttributeName: 'category'
-              AttributeType: 'S'
+            - AttributeName: id
+              AttributeType: S
+            # - AttributeName: stock
+            #   AttributeType: 'N'
           KeySchema:
-            - AttributeName: 'id'
-              KeyType: 'HASH'
-            - AttributeName: 'stock'
-              KeyType: 'RANGE'
+            - AttributeName: id
+              KeyType: HASH
+            # - AttributeName: stock
+            #   KeyType: RANGE
           ProvisionedThroughput:
-            ReadCapacityUnits: 1
-            WriteCapacityUnits: 1
-          GlobalSecondaryIndexes:
-            - IndexName: 'category_index'
-              KeySchema:
-                - AttributeName: 'category'
-                  KeyType: 'HASH'
-              Projection:
-                ProjectionType: 'ALL'
-              ProvisionedThroughput:
-                ReadCapacityUnits: 1
-                WriteCapacityUnits: 1
+            ReadCapacityUnits: 5
+            WriteCapacityUnits: 5
           StreamSpecification:
             StreamViewType: NEW_IMAGE
 

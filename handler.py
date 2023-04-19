@@ -18,7 +18,7 @@ dynamodb = boto3.resource(
 table = dynamodb.Table(str(os.environ['DYNAMODB_TABLE']))
 
 sqs = boto3.resource('sqs', region_name=str(os.environ['REGION_NAME']))
-queue_url = str(os.environ['DYNAMODB_TABLE'])
+queue_url = str(os.environ['URL_SQS'])
 
 
 def hello(event, context):
@@ -68,6 +68,9 @@ def create_product(event, context):
 
     logger.info(f'Res Put Item :::: {res}')
 
+
+    # RETURN PRODUCT
+
     # If creation is successful
     if res['ResponseMetadata']['HTTPStatusCode'] == 200:
         response = {
@@ -98,7 +101,7 @@ def get_product(event, context):
     product_id = event['pathParameters']['product_id']
 
     res = table.get_item(
-        Key={
+        Key = {
             'id': product_id
         }
     )
@@ -121,14 +124,10 @@ def get_product(event, context):
     }
 
 
-def decimal_default(obj):
-
-    if isinstance(obj, Decimal):
-        return float(obj)
-    raise TypeError
-
-
 def all_product(event, context):
+
+
+    # Validar cuando no hay productos
 
     try:
         response = table.scan()
@@ -163,7 +162,8 @@ def update_product(event, context):
 
     try:
 
-        print("pathParameters :::::==>>>", event['body'])
+        print("Body :::::==>>>", event['body'])
+        print("PathParameters :::::==>>>", event['pathParameters']['product_id'])
 
         logger.info(f'Incoming request is: {event}')
 
@@ -195,29 +195,34 @@ def update_product(event, context):
             ExpressionAttributeValues=expression_attribute_values
         )
 
+        print("res :::::==>>>", res)
+
         # If updation is successful for post
         if res['ResponseMetadata']['HTTPStatusCode'] == 200:
 
             response = {
                 "statusCode": 200,
-                "body": json.dumps({
-                    "message": f"Product with ID {product_id} has been updated successfully.",
-                })
+                "message":f"Product with ID {product_id} has been updated successfully.",
             }
 
-        return response
+        return {
+            'headers': {'Content-Type': 'application/json'},
+            'body': json.dumps(response)
+        }
 
     except Exception as e:
 
         logger.error(f"An error occurred while updating the product: {str(e)}")
+        
         response = {
             "statusCode": 500,
-            "body": json.dumps({
-                "message": "An error occurred while updating the product."
-            })
-        }
+            "message": "An error occurred while updating the product."
+            }
 
-        return response
+        return {
+            'headers': {'Content-Type': 'application/json'},
+            'body': json.dumps(response)
+        }
 
 
 def delete_product(event, context):
@@ -280,6 +285,10 @@ def buy_product(event, context):
 
         product_id, user_quantity = product['product_id'], product['user_quantity']
 
+        print("ID::::", product_id)
+        print("user_quantity::::", user_quantity)
+
+
         res = table.get_item(
             Key={
                 'id': product_id
@@ -288,69 +297,86 @@ def buy_product(event, context):
 
         print("res:::::", res)
 
-        print('Item', res['Item'])
+        print('Item:::::', res['Item'])
 
-        if 'Items' in res:
+        if 'Item' in res:
 
-            product_stock = res['Items'][0]['stock']
+            product_stock = res['Item']['stock']
+
+            user_quantity = int(user_quantity)
+            product_stock = int(product_stock)
+
+            print("product_stock::::", product_stock)
+            print("user_quantity::::", user_quantity)
+            
+
 
             if product_stock > user_quantity:
 
-                product_name = res['Items'][0]['product_name']
+                product_name = res['Item']['product_name']
+                product_price = res['Item']['price']
 
                 new_stock = product_stock - user_quantity
+                timeStamp = datetime.now().isoformat()
 
-                table.update_item(Key={'id': product_id},
-                        UpdateExpression='SET stock = :val1, SET updatedAt = :val2 ',
-                        ExpressionAttributeValues={':val1': new_stock, ':val2': timeStamp})
+                print("new_stock::::", new_stock)
+
+                table.update_item(
+                    Key={'id': product_id},
+                    UpdateExpression='SET stock = :val1, updatedAt = :val2 ',      
+                    ExpressionAttributeValues={':val1': new_stock, ':val2': timeStamp}
+                )
 
                 logger.info(f'You will buy {user_quantity} {product_name}')
 
                 # Bucket manipulation:
 
-                timeStamp = datetime.now().isoformat()
+                # product_name = product_name.replace(" ", "-")
 
-                bucket_name = f"bucket-{timeStamp}-{product_name}-{user_quantity}"
+                print(f'product-name::::', str(product_name))
+
+                bucket_id = str(uuid.uuid4())
+                bucket_name = f"bucket-{bucket_id}"
+                total_price = user_quantity * product_price
 
                 s3.create_bucket(Bucket=bucket_name)
 
                 data = {
-                    "timeStamp" : timeStamp,
+                    "timeStamp": timeStamp,
                     "product_name": product_name,
                     "products_sold": user_quantity,
-                    # user
+                    "total_price": total_price
                 }
 
-                json_object = json.dumps(data)
+                json_object = json.dumps(data, default=float)
+                file_name = f"bucket-{bucket_id}.json"
 
-                file_name = f"bucket-{timeStamp}-{product_name}-{user_quantity}.json"
-
-                s3.Object(bucket_name, file_name).put(Body=json_object)
+                s3_resource = boto3.resource('s3')
+                s3_resource.Object(bucket_name, file_name).put(Body=json_object)
 
                 response = {
                     "statusCode": 200,
-                    'headers': {'Content-Type': 'application/json'},
-                    "body": "Product purchased!"
+                    "message": "Product purchased!"
                 }
 
                 return {
-                        'headers': {'Content-Type': 'application/json'},
-                        'body': json.dumps(response)
-                    }
+                    'headers': {'Content-Type': 'application/json'},
+                    'body': json.dumps(response)
+                }
 
             else:
 
-                # Envio a cola de SQS para lambda
+                product_name = res['Item']['product_name']
 
-                message = {
-
+                data = {
+                    "message" : "The stock is Null",
+                    "product_id" : product_id,
+                    "product_name" : product_name
                 }
 
-                product_name = res['Items'][0]['product_name']
-                
                 queue = sqs.Queue(queue_url)
                 response = queue.send_message(
-                    MessageBody=json.dumps(f"There are not {product_name} in DynamoDB"),
+                    MessageBody=json.dumps(data),
                     DelaySeconds=10,
                     MessageAttributes={
                         'Author': {
@@ -360,33 +386,90 @@ def buy_product(event, context):
                     }
                 )
 
-
                 response = {
-                    "statusCode": 400,
-                    'headers': {'Content-Type': 'application/json'},
-                    "body": 'Order sent to SQS'
+                    "statusCode": 200,
+                    "message": 'Petition sent to SQS'
                 }
 
                 return {
-                        'headers': {'Content-Type': 'application/json'},
-                        'body': json.dumps(response)
-                    }
+                    'headers': {'Content-Type': 'application/json'},
+                    'body': json.dumps(response)
+                }
+
+        else:
+
+            response = {
+                    "statusCode": 400,
+                    "message": f'The product {product_name} not exists in DB'
+                }
+            
+            return {
+                'headers': {'Content-Type': 'application/json'},
+                'body': json.dumps(response)
+            }
 
     except Exception as e:
 
         logger.warning(f'Error in buy product: {e}')
 
         response = {
+            "statusCode": 500,
+            "message": "An error occurred while buying the product."
+            }
 
+        return {
+            'headers': {'Content-Type': 'application/json'},
+            'body': json.dumps(response)
         }
 
-def fill_stock(event, context): 
 
-    print('fill_stock')
+def fill_stock(event, context):
+
+    try:
+
+        product_id = event
+        product_name = event
+        timeStamp = datetime.now().isoformat()
+
+        new_stock = 30
+
+        res = table.update_item(Key={'id': product_id},
+            UpdateExpression='SET stock = :val1, SET updatedAt = :val2 ',
+            ExpressionAttributeValues={':val1': new_stock, ':val2': timeStamp})
+
+        print("res :::::==>>>", res)
+
+        # If updation is successful for post
+        if res['ResponseMetadata']['HTTPStatusCode'] == 200:
+
+            response = {
+                "statusCode": 200,
+                "message":f"Product {product_name} with ID {product_id} has been updated successfully.",
+            }
+
+        return {
+            'headers': {'Content-Type': 'application/json'},
+            'body': json.dumps(response)
+        }
+
+    except Exception as e:
+
+        logger.error(f"An error occurred while updating the product: {str(e)}")
+        
+        response = {
+            "statusCode": 500,
+            "message": "An error occurred while updating the product."
+            }
+
+        return {
+            'headers': {'Content-Type': 'application/json'},
+            'body': json.dumps(response)
+        }
+
+    
 
 
-
-# Tabla de Dynamo: 
+# Tabla de Dynamo:
 """
 table = dynamodb.create_table(
     TableName= str(os.environ['DYNAMODB_TABLE']),
